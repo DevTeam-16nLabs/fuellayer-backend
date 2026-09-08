@@ -80,6 +80,35 @@ class ShoppingCadence(StrEnum):
     MONTHLY = "monthly"
 
 
+class LivingArrangement(StrEnum):
+    ALONE = "alone"
+    PARTNER = "partner"
+    FAMILY = "family"
+    ROOMMATES = "roommates"
+
+
+class MealAudience(StrEnum):
+    JUST_ME = "just_me"
+    SHARED = "shared"
+    MIXED = "mixed"
+
+
+class MealContextSlot(StrEnum):
+    BREAKFAST = "breakfast"
+    LUNCH = "lunch"
+    DINNER = "dinner"
+
+
+class LocationStatus(StrEnum):
+    SELECTED = "selected"
+    SKIPPED = "skipped"
+
+
+class LocationSource(StrEnum):
+    DEVICE = "device"
+    MANUAL = "manual"
+
+
 class PlanStatus(StrEnum):
     READY = "ready"
     CONSTRAINED = "constrained"
@@ -147,6 +176,119 @@ class OnboardingAnswersV1(BaseModel):
     food: FoodAnswers
 
 
+class HouseholdProfile(BaseModel):
+    living_arrangement: LivingArrangement
+    household_size: Annotated[int, Field(ge=1, le=12)]
+
+    @model_validator(mode="after")
+    def validate_size(self) -> "HouseholdProfile":
+        if self.living_arrangement == LivingArrangement.ALONE and self.household_size != 1:
+            raise ValueError("an alone household must have exactly one person")
+        if self.living_arrangement != LivingArrangement.ALONE and self.household_size < 2:
+            raise ValueError("a shared household must have at least two people")
+        return self
+
+
+class MealContext(BaseModel):
+    slot: MealContextSlot
+    audience: MealAudience
+    shared_days_per_week: Annotated[int, Field(ge=0, le=7)]
+    shared_servings: Annotated[int, Field(ge=1, le=12)]
+
+    @model_validator(mode="after")
+    def validate_audience_values(self) -> "MealContext":
+        if self.audience == MealAudience.JUST_ME:
+            if self.shared_days_per_week != 0 or self.shared_servings != 1:
+                raise ValueError("just_me meals require 0 shared days and 1 serving")
+        elif self.audience == MealAudience.SHARED:
+            if self.shared_days_per_week != 7 or self.shared_servings < 2:
+                raise ValueError("shared meals require 7 shared days and at least 2 servings")
+        elif not (1 <= self.shared_days_per_week <= 6 and self.shared_servings >= 2):
+            raise ValueError("mixed meals require 1-6 shared days and at least 2 servings")
+        return self
+
+
+class ShoppingProfile(BaseModel):
+    cadence: ShoppingCadence
+    location_status: LocationStatus
+    location_source: LocationSource | None = None
+    area_label: Annotated[str | None, Field(max_length=160)] = None
+    country_code: Annotated[str | None, Field(min_length=2, max_length=2)] = None
+    preferred_place_ids: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
+        default_factory=list, max_length=3
+    )
+
+    @model_validator(mode="after")
+    def validate_location(self) -> "ShoppingProfile":
+        if len(self.preferred_place_ids) != len(set(self.preferred_place_ids)):
+            raise ValueError("preferred_place_ids must be unique")
+        if self.location_status == LocationStatus.SKIPPED:
+            if self.location_source is not None or self.preferred_place_ids:
+                raise ValueError("skipped locations cannot include a source or stores")
+        elif self.location_source is None:
+            raise ValueError("selected locations require a source")
+        return self
+
+
+class FoodAnswersV2(BaseModel):
+    dietary_pattern: DietaryPattern
+    allergens: list[AllergenCode] = Field(default_factory=list, max_length=15)
+    meals_per_day: Annotated[int, Field(ge=2, le=4)]
+    include_breakfast: bool
+    snack_slots: list[Annotated[int, Field(ge=0, le=3)]] = Field(default_factory=list, max_length=3)
+    cooking_time: CookingTimeBand
+
+    @model_validator(mode="after")
+    def validate_lists(self) -> "FoodAnswersV2":
+        if len(self.allergens) != len(set(self.allergens)):
+            raise ValueError("allergens must be unique")
+        if len(self.snack_slots) != len(set(self.snack_slots)):
+            raise ValueError("snack_slots must be unique")
+        if any(slot >= self.meals_per_day - 1 for slot in self.snack_slots):
+            raise ValueError("snack slots must sit between configured meals")
+        return self
+
+
+class OnboardingAnswersV2(BaseModel):
+    schema_version: Literal[2] = 2
+    locale: Literal["en"] = "en"
+    units: UnitSystem
+    goal: GoalAnswers
+    profile: ProfileAnswers
+    activity: ActivityAnswers
+    food: FoodAnswersV2
+    household: HouseholdProfile
+    meal_contexts: list[MealContext] = Field(min_length=2, max_length=3)
+    shopping: ShoppingProfile
+
+    @model_validator(mode="after")
+    def validate_meal_contexts(self) -> "OnboardingAnswersV2":
+        expected = {MealContextSlot.DINNER}
+        if self.food.include_breakfast:
+            expected.add(MealContextSlot.BREAKFAST)
+        if self.food.meals_per_day - int(self.food.include_breakfast) >= 2:
+            expected.add(MealContextSlot.LUNCH)
+        actual = {context.slot for context in self.meal_contexts}
+        if len(actual) != len(self.meal_contexts) or actual != expected:
+            raise ValueError("meal_contexts must match the configured main meal slots")
+        if self.household.living_arrangement == LivingArrangement.ALONE and any(
+            context.audience != MealAudience.JUST_ME for context in self.meal_contexts
+        ):
+            raise ValueError("an alone household can only configure just_me meals")
+        if any(
+            context.shared_servings > self.household.household_size
+            for context in self.meal_contexts
+        ):
+            raise ValueError("shared servings cannot exceed household size")
+        return self
+
+
+OnboardingAnswers = Annotated[
+    OnboardingAnswersV1 | OnboardingAnswersV2,
+    Field(discriminator="schema_version"),
+]
+
+
 class MacroTargets(BaseModel):
     protein_g: int
     carbohydrates_g: int
@@ -170,6 +312,16 @@ class PlannedMeal(BaseModel):
     prep_minutes: int
     portions: float
     ingredients: list[IngredientAmount]
+
+
+class PlannedMealV2(PlannedMeal):
+    audience: MealAudience
+    servings: int
+
+
+class PlannedDay(BaseModel):
+    day: Annotated[int, Field(ge=1, le=7)]
+    meals: list[PlannedMealV2]
 
 
 class GroceryItem(BaseModel):
@@ -198,14 +350,89 @@ class StarterPlanPreviewV1(BaseModel):
     warnings: list[str]
 
 
+class GroceryRefresh(BaseModel):
+    day_offset: Annotated[int, Field(ge=7, le=21)]
+    label: str
+    sections: list[GrocerySection]
+
+
+class GroceryPlan(BaseModel):
+    horizon_days: Literal[7, 14, 28]
+    main_trip: list[GrocerySection]
+    fresh_refreshes: list[GroceryRefresh]
+
+
+class StarterPlanPreviewV2(BaseModel):
+    schema_version: Literal[2] = 2
+    status: PlanStatus
+    engine_version: str
+    content_version: str
+    input_hash: str
+    daily_energy_kcal: int
+    macros: MacroTargets
+    confidence: ConfidenceLevel
+    days: list[PlannedDay] = Field(min_length=7, max_length=7)
+    grocery: GroceryPlan
+    explanations: list[str]
+    warnings: list[str]
+
+
+StarterPlanPreview = Annotated[
+    StarterPlanPreviewV1 | StarterPlanPreviewV2,
+    Field(discriminator="schema_version"),
+]
+
+
 class BootstrapUser(BaseModel):
     id: str | None
     onboarding_status: Literal["not_started", "completed"]
+    planning_profile_version: Literal[1, 2] | None = None
 
 
 class BootstrapResponse(BaseModel):
     user: BootstrapUser
-    plan: StarterPlanPreviewV1 | None = None
+    plan: StarterPlanPreview | None = None
+
+
+class PlanningProfileUpgrade(BaseModel):
+    locale: Literal["en"] = "en"
+    household: HouseholdProfile
+    meal_contexts: list[MealContext] = Field(min_length=2, max_length=3)
+    shopping: ShoppingProfile
+
+
+class CoordinateStoreSearch(BaseModel):
+    source: Literal["coordinates"]
+    latitude: Annotated[float, Field(ge=-90, le=90)]
+    longitude: Annotated[float, Field(ge=-180, le=180)]
+    locale: str = Field(default="en", min_length=2, max_length=16)
+    area_label: str | None = Field(default=None, max_length=160)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
+
+
+class TextStoreSearch(BaseModel):
+    source: Literal["text"]
+    query: str = Field(min_length=2, max_length=160)
+    locale: str = Field(default="en", min_length=2, max_length=16)
+
+
+StoreSearchRequest = Annotated[
+    CoordinateStoreSearch | TextStoreSearch,
+    Field(discriminator="source"),
+]
+
+
+class NearbyStore(BaseModel):
+    place_id: str
+    name: str
+    address: str
+    distance_meters: int | None = None
+
+
+class StoreSearchResponse(BaseModel):
+    area_label: str
+    country_code: str | None = None
+    stores: list[NearbyStore]
 
 
 class AccountDeletionResponse(BaseModel):

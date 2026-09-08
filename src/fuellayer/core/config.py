@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     clerk_webhook_signing_secret: str | None = None
     clerk_authorized_parties: str = "fuellayer://,http://localhost:8081"
     onboarding_preview_rate_limit: int = 10
+    store_search_rate_limit: int = 20
+    google_places_api_key: str | None = None
+    cors_origins: str = "http://localhost:8081,http://127.0.0.1:8081"
 
     @property
     def clerk_authorized_parties_list(self) -> list[str]:

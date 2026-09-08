@@ -47,6 +47,9 @@ class User(Base):
     onboarding_completion: Mapped["OnboardingCompletion | None"] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
+    planning_profile: Mapped["PlanningProfile | None"] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class Profile(Base):
@@ -178,6 +181,31 @@ class OnboardingCompletion(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     user: Mapped[User] = relationship(back_populates="onboarding_completion")
+
+
+class PlanningProfile(Base):
+    __tablename__ = "planning_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, default=2)
+    living_arrangement: Mapped[str] = mapped_column(String(32))
+    household_size: Mapped[int] = mapped_column(Integer)
+    meal_contexts: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
+    shopping_cadence: Mapped[str] = mapped_column(String(32))
+    location_status: Mapped[str] = mapped_column(String(32))
+    location_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    area_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    preferred_place_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    user: Mapped[User] = relationship(back_populates="planning_profile")
 
 
 class ClerkWebhookEvent(Base):

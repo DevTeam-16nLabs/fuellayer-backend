@@ -1,6 +1,12 @@
 from dataclasses import dataclass
+from enum import StrEnum
 
 from fuellayer.modules.onboarding.schemas import AllergenCode, DietaryPattern
+
+
+class PurchaseKind(StrEnum):
+    FRESH = "fresh"
+    LONG_LIFE = "long_life"
 
 
 @dataclass(frozen=True)
@@ -9,6 +15,7 @@ class CatalogIngredient:
     quantity: float
     unit: str
     aisle: str
+    purchase_kind: PurchaseKind
 
 
 @dataclass(frozen=True)
@@ -41,7 +48,14 @@ OMNIVORE = frozenset({DietaryPattern.NONE})
 
 
 def ingredient(name: str, quantity: float, unit: str, aisle: str) -> CatalogIngredient:
-    return CatalogIngredient(name=name, quantity=quantity, unit=unit, aisle=aisle)
+    fresh_aisles = {"Produce", "Dairy & Eggs", "Meat & Fish"}
+    return CatalogIngredient(
+        name=name,
+        quantity=quantity,
+        unit=unit,
+        aisle=aisle,
+        purchase_kind=PurchaseKind.FRESH if aisle in fresh_aisles else PurchaseKind.LONG_LIFE,
+    )
 
 
 MEAL_CATALOG: tuple[CatalogMeal, ...] = (

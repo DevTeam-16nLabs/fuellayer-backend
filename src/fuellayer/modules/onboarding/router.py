@@ -10,8 +10,8 @@ from fuellayer.modules.onboarding.engine import UnderageNotSupportedError, build
 from fuellayer.modules.onboarding.rate_limit import SlidingWindowRateLimiter
 from fuellayer.modules.onboarding.schemas import (
     BootstrapResponse,
-    OnboardingAnswersV1,
-    StarterPlanPreviewV1,
+    OnboardingAnswers,
+    StarterPlanPreview,
 )
 from fuellayer.modules.onboarding.service import complete_onboarding
 
@@ -19,11 +19,11 @@ router = APIRouter(prefix="/onboarding")
 preview_rate_limiter = SlidingWindowRateLimiter(settings.onboarding_preview_rate_limit)
 
 
-@router.post("/preview", response_model=StarterPlanPreviewV1)
+@router.post("/preview", response_model=StarterPlanPreview)
 async def preview_onboarding(
-    answers: OnboardingAnswersV1,
+    answers: OnboardingAnswers,
     request: Request,
-) -> StarterPlanPreviewV1:
+) -> StarterPlanPreview:
     client_key = request.client.host if request.client else "unknown"
     if not preview_rate_limiter.allow(client_key):
         raise HTTPException(
@@ -44,7 +44,7 @@ async def preview_onboarding(
 
 @router.post("/complete", response_model=BootstrapResponse)
 async def save_onboarding(
-    answers: OnboardingAnswersV1,
+    answers: OnboardingAnswers,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=128)],
     auth: Annotated[AuthSubject, Depends(require_auth_subject)],
     session: Annotated[AsyncSession, Depends(get_session)],

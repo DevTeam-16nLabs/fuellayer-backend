@@ -18,17 +18,37 @@ from fuellayer.modules.onboarding.models import (
     GroceryListRecord,
     NutritionTarget,
     OnboardingCompletion,
+    PlanningProfile,
     Profile,
     StarterPlanRecord,
     User,
 )
 from fuellayer.modules.onboarding.schemas import (
     AccountDeletionResponse,
+    ActivityAnswers,
+    ActivityBand,
+    AllergenCode,
     BootstrapResponse,
     BootstrapUser,
+    CookingTimeBand,
+    DietaryPattern,
+    EquationSex,
+    FoodAnswersV2,
+    GoalAnswers,
+    GoalDetail,
+    GoalType,
+    OnboardingAnswers,
     OnboardingAnswersV1,
+    OnboardingAnswersV2,
+    PlanningProfileUpgrade,
     PlanStatus,
+    ProfileAnswers,
+    ShoppingCadence,
+    StarterPlanPreview,
     StarterPlanPreviewV1,
+    StarterPlanPreviewV2,
+    TrainingFocus,
+    UnitSystem,
 )
 
 
@@ -46,22 +66,36 @@ async def get_bootstrap(session: AsyncSession, clerk_subject: str) -> BootstrapR
     result = await session.execute(
         select(User)
         .where(User.clerk_subject == clerk_subject)
-        .options(selectinload(User.starter_plan))
+        .options(selectinload(User.starter_plan), selectinload(User.planning_profile))
     )
     user = result.scalar_one_or_none()
     if user is None:
         return BootstrapResponse(
             user=BootstrapUser(id=None, onboarding_status="not_started"), plan=None
         )
-    plan = None
+    plan: StarterPlanPreview | None = None
     if user.starter_plan is not None:
-        plan = StarterPlanPreviewV1.model_validate(user.starter_plan.preview_payload)
+        payload = user.starter_plan.preview_payload
+        if payload.get("schema_version") == 2:
+            plan = StarterPlanPreviewV2.model_validate(payload)
+        else:
+            plan = StarterPlanPreviewV1.model_validate(payload)
     onboarding_status = cast(
         Literal["not_started", "completed"],
         user.onboarding_status,
     )
     return BootstrapResponse(
-        user=BootstrapUser(id=str(user.id), onboarding_status=onboarding_status),
+        user=BootstrapUser(
+            id=str(user.id),
+            onboarding_status=onboarding_status,
+            planning_profile_version=(
+                2
+                if user.planning_profile is not None
+                else 1
+                if onboarding_status == "completed"
+                else None
+            ),
+        ),
         plan=plan,
     )
 
@@ -70,7 +104,7 @@ async def complete_onboarding(
     session: AsyncSession,
     clerk_subject: str,
     idempotency_key: str,
-    answers: OnboardingAnswersV1,
+    answers: OnboardingAnswers,
 ) -> BootstrapResponse:
     existing_completion = await session.scalar(
         select(OnboardingCompletion).where(
@@ -127,10 +161,20 @@ async def complete_onboarding(
                     allergens=[allergen.value for allergen in answers.food.allergens],
                     meals_per_day=answers.food.meals_per_day,
                     include_breakfast=answers.food.include_breakfast,
-                    include_snacks=answers.food.include_snacks,
+                    include_snacks=(
+                        answers.food.include_snacks
+                        if isinstance(answers, OnboardingAnswersV1)
+                        else bool(answers.food.snack_slots)
+                    ),
                     cooking_time=answers.food.cooking_time.value,
-                    servings=answers.food.servings,
-                    shopping_cadence=answers.food.shopping_cadence.value,
+                    servings=(
+                        answers.food.servings if isinstance(answers, OnboardingAnswersV1) else 1
+                    ),
+                    shopping_cadence=(
+                        answers.food.shopping_cadence.value
+                        if isinstance(answers, OnboardingAnswersV1)
+                        else answers.shopping.cadence.value
+                    ),
                 ),
                 NutritionTarget(
                     user_id=user.id,
@@ -149,7 +193,14 @@ async def complete_onboarding(
                 ),
                 GroceryListRecord(
                     user_id=user.id,
-                    grouped_items=[section.model_dump(mode="json") for section in preview.grocery],
+                    grouped_items=[
+                        section.model_dump(mode="json")
+                        for section in (
+                            preview.grocery
+                            if isinstance(preview, StarterPlanPreviewV1)
+                            else preview.grocery.main_trip
+                        )
+                    ],
                     content_version=preview.content_version,
                 ),
                 OnboardingCompletion(
@@ -162,6 +213,28 @@ async def complete_onboarding(
                 ),
             ]
         )
+        if isinstance(answers, OnboardingAnswersV2):
+            session.add(
+                PlanningProfile(
+                    user_id=user.id,
+                    schema_version=2,
+                    living_arrangement=answers.household.living_arrangement.value,
+                    household_size=answers.household.household_size,
+                    meal_contexts=[
+                        context.model_dump(mode="json") for context in answers.meal_contexts
+                    ],
+                    shopping_cadence=answers.shopping.cadence.value,
+                    location_status=answers.shopping.location_status.value,
+                    location_source=(
+                        answers.shopping.location_source.value
+                        if answers.shopping.location_source
+                        else None
+                    ),
+                    area_label=answers.shopping.area_label,
+                    country_code=answers.shopping.country_code,
+                    preferred_place_ids=answers.shopping.preferred_place_ids,
+                )
+            )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -174,6 +247,117 @@ async def complete_onboarding(
         if completion is None:
             raise
 
+    return await get_bootstrap(session, clerk_subject)
+
+
+async def upgrade_planning_profile(
+    session: AsyncSession,
+    clerk_subject: str,
+    idempotency_key: str,
+    upgrade: PlanningProfileUpgrade,
+) -> BootstrapResponse:
+    del idempotency_key  # The deterministic input hash makes this upsert replay-safe.
+    user = await session.scalar(
+        select(User)
+        .where(User.clerk_subject == clerk_subject)
+        .options(
+            selectinload(User.profile),
+            selectinload(User.measurements),
+            selectinload(User.goal),
+            selectinload(User.food_preferences),
+            selectinload(User.planning_profile),
+            selectinload(User.starter_plan),
+            selectinload(User.grocery_list),
+        )
+    )
+    if (
+        user is None
+        or user.onboarding_status != "completed"
+        or user.profile is None
+        or not user.measurements
+        or user.goal is None
+        or user.food_preferences is None
+        or user.starter_plan is None
+        or user.grocery_list is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "onboarding_not_completed",
+                "message": "Complete your original onboarding before upgrading the plan.",
+            },
+        )
+
+    food = user.food_preferences
+    goal_detail = GoalDetail(user.goal.goal_detail) if user.goal.goal_detail else None
+    snack_slots = [0] if food.include_snacks else []
+    latest_measurement = max(user.measurements, key=lambda item: item.measured_at)
+    answers = OnboardingAnswersV2(
+        locale=upgrade.locale,
+        units=UnitSystem(user.profile.preferred_units),
+        goal=GoalAnswers(type=GoalType(user.goal.goal_type), detail=goal_detail),
+        profile=ProfileAnswers(
+            age=user.profile.age_at_onboarding,
+            height_cm=user.profile.height_cm,
+            weight_kg=latest_measurement.weight_kg,
+            equation_sex=EquationSex(user.profile.equation_sex),
+        ),
+        activity=ActivityAnswers(
+            daily_movement=ActivityBand(user.goal.daily_movement),
+            training_days=user.goal.training_days,
+            training_focus=TrainingFocus(user.goal.training_focus),
+        ),
+        food=FoodAnswersV2(
+            dietary_pattern=DietaryPattern(food.dietary_pattern),
+            allergens=[AllergenCode(value) for value in food.allergens],
+            meals_per_day=food.meals_per_day,
+            include_breakfast=food.include_breakfast,
+            snack_slots=snack_slots,
+            cooking_time=CookingTimeBand(food.cooking_time),
+        ),
+        household=upgrade.household,
+        meal_contexts=upgrade.meal_contexts,
+        shopping=upgrade.shopping.model_copy(
+            update={"cadence": ShoppingCadence(food.shopping_cadence)}
+        ),
+    )
+    preview = build_preview(answers)
+    assert isinstance(preview, StarterPlanPreviewV2)
+    if preview.status == PlanStatus.CONSTRAINED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "plan_constraints_unresolved",
+                "message": "The current catalog cannot safely save this combination yet.",
+            },
+        )
+
+    values = {
+        "schema_version": 2,
+        "living_arrangement": upgrade.household.living_arrangement.value,
+        "household_size": upgrade.household.household_size,
+        "meal_contexts": [context.model_dump(mode="json") for context in upgrade.meal_contexts],
+        "shopping_cadence": food.shopping_cadence,
+        "location_status": upgrade.shopping.location_status.value,
+        "location_source": (
+            upgrade.shopping.location_source.value if upgrade.shopping.location_source else None
+        ),
+        "area_label": upgrade.shopping.area_label,
+        "country_code": upgrade.shopping.country_code,
+        "preferred_place_ids": upgrade.shopping.preferred_place_ids,
+    }
+    if user.planning_profile is None:
+        user.planning_profile = PlanningProfile(**values)
+    else:
+        for field, value in values.items():
+            setattr(user.planning_profile, field, value)
+    user.starter_plan.preview_payload = preview.model_dump(mode="json")
+    user.starter_plan.content_version = preview.content_version
+    user.grocery_list.grouped_items = [
+        section.model_dump(mode="json") for section in preview.grocery.main_trip
+    ]
+    user.grocery_list.content_version = preview.content_version
+    await session.commit()
     return await get_bootstrap(session, clerk_subject)
 
 

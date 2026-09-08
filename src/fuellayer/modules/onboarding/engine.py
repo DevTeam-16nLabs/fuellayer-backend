@@ -1,8 +1,9 @@
 import hashlib
 import json
 from collections import defaultdict
+from typing import Literal
 
-from fuellayer.modules.onboarding.catalog import MEAL_CATALOG, CatalogMeal
+from fuellayer.modules.onboarding.catalog import MEAL_CATALOG, CatalogMeal, PurchaseKind
 from fuellayer.modules.onboarding.schemas import (
     ActivityBand,
     ConfidenceLevel,
@@ -11,17 +12,29 @@ from fuellayer.modules.onboarding.schemas import (
     GoalDetail,
     GoalType,
     GroceryItem,
+    GroceryPlan,
+    GroceryRefresh,
     GrocerySection,
     IngredientAmount,
     MacroTargets,
+    MealAudience,
+    MealContext,
+    MealContextSlot,
     OnboardingAnswersV1,
+    OnboardingAnswersV2,
+    PlannedDay,
     PlannedMeal,
+    PlannedMealV2,
     PlanStatus,
     StarterPlanPreviewV1,
+    StarterPlanPreviewV2,
 )
 
 ENGINE_VERSION = "energy-v1.0.0"
-CONTENT_VERSION = "starter-catalog-v1.0.0"
+ENGINE_VERSION_V2 = "weekly-household-v2.0.0"
+CONTENT_VERSION = "starter-catalog-v1.1.0"
+
+AnswerSet = OnboardingAnswersV1 | OnboardingAnswersV2
 
 # These constants are intentionally centralized and versioned. They must receive
 # registered-dietitian review before FuelLayer is exposed as a production product.
@@ -56,7 +69,7 @@ class UnderageNotSupportedError(ValueError):
     pass
 
 
-def _canonical_hash(answers: OnboardingAnswersV1) -> str:
+def _canonical_hash(answers: AnswerSet) -> str:
     payload = json.dumps(
         answers.model_dump(mode="json", exclude_none=True),
         sort_keys=True,
@@ -65,7 +78,7 @@ def _canonical_hash(answers: OnboardingAnswersV1) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:20]
 
 
-def _mifflin_rmr(answers: OnboardingAnswersV1) -> tuple[float, ConfidenceLevel]:
+def _mifflin_rmr(answers: AnswerSet) -> tuple[float, ConfidenceLevel]:
     profile = answers.profile
     base = 10 * profile.weight_kg + 6.25 * profile.height_cm - 5 * profile.age
     if profile.equation_sex == EquationSex.MALE:
@@ -75,7 +88,7 @@ def _mifflin_rmr(answers: OnboardingAnswersV1) -> tuple[float, ConfidenceLevel]:
     return ((base + 5) + (base - 161)) / 2, ConfidenceLevel.WIDER
 
 
-def _energy_target(answers: OnboardingAnswersV1) -> tuple[int, ConfidenceLevel, list[str]]:
+def _energy_target(answers: AnswerSet) -> tuple[int, ConfidenceLevel, list[str]]:
     resting, confidence = _mifflin_rmr(answers)
     movement = ACTIVITY_MULTIPLIERS[answers.activity.daily_movement]
     goal_multiplier = GOAL_MULTIPLIERS[(answers.goal.type, answers.goal.detail)]
@@ -95,7 +108,7 @@ def _energy_target(answers: OnboardingAnswersV1) -> tuple[int, ConfidenceLevel, 
     return round(raw_target / 10) * 10, confidence, warnings
 
 
-def _macro_targets(answers: OnboardingAnswersV1, calories: int) -> MacroTargets:
+def _macro_targets(answers: AnswerSet, calories: int) -> MacroTargets:
     protein = round(answers.profile.weight_kg * PROTEIN_G_PER_KG[answers.goal.type])
     protein = min(protein, max(70, round(calories * 0.35 / 4)))
     fat = round(calories * 0.27 / 9)
@@ -129,7 +142,7 @@ def _meal_weights(slots: list[tuple[str, str]]) -> list[float]:
 
 
 def _choose_meal(
-    answers: OnboardingAnswersV1,
+    answers: AnswerSet,
     slot: str,
     input_hash: str,
     occurrence: int,
@@ -218,7 +231,7 @@ def _build_meals(
     return meals, grocery
 
 
-def build_preview(answers: OnboardingAnswersV1) -> StarterPlanPreviewV1:
+def _build_preview_v1(answers: OnboardingAnswersV1) -> StarterPlanPreviewV1:
     if answers.profile.age < 18:
         raise UnderageNotSupportedError("FuelLayer currently supports adults aged 18 and over.")
 
@@ -264,3 +277,206 @@ def build_preview(answers: OnboardingAnswersV1) -> StarterPlanPreviewV1:
         explanations=explanations,
         warnings=warnings,
     )
+
+
+def _slot_plan_v2(answers: OnboardingAnswersV2) -> list[tuple[str, str, MealContextSlot | None]]:
+    count = answers.food.meals_per_day
+    if answers.food.include_breakfast:
+        main_slots: list[tuple[str, str, MealContextSlot | None]] = [
+            ("breakfast", "Breakfast", MealContextSlot.BREAKFAST)
+        ]
+        remaining_lunches = max(0, count - 2)
+    else:
+        main_slots = []
+        remaining_lunches = count - 1
+
+    for lunch_index in range(remaining_lunches):
+        label = "Lunch" if lunch_index == 0 else "Afternoon meal"
+        main_slots.append(("lunch", label, MealContextSlot.LUNCH))
+    main_slots.append(("dinner", "Dinner", MealContextSlot.DINNER))
+
+    slots = list(main_slots)
+    for offset, insertion in enumerate(sorted(answers.food.snack_slots)):
+        target = min(insertion + 1 + offset, len(slots) - 1)
+        slots.insert(target, ("snack", "Snack", None))
+    return slots
+
+
+def _shared_days(context: MealContext) -> set[int]:
+    if context.audience == MealAudience.JUST_ME:
+        return set()
+    if context.audience == MealAudience.SHARED:
+        return set(range(7))
+    # Favor the weekend, then spread the remaining shared meals across the week.
+    priority = (5, 6, 2, 4, 1, 3, 0)
+    return set(priority[: context.shared_days_per_week])
+
+
+def _group_grocery(
+    totals: dict[tuple[str, str, str], float],
+) -> list[GrocerySection]:
+    by_aisle: dict[str, list[GroceryItem]] = defaultdict(list)
+    for (aisle, name, unit), quantity in sorted(totals.items()):
+        by_aisle[aisle].append(
+            GroceryItem(name=name, quantity=_round_quantity(quantity), unit=unit)
+        )
+    return [GrocerySection(aisle=aisle, items=items) for aisle, items in sorted(by_aisle.items())]
+
+
+def _scale_totals(
+    totals: dict[tuple[str, str, str], float], multiplier: int
+) -> dict[tuple[str, str, str], float]:
+    return {key: value * multiplier for key, value in totals.items()}
+
+
+def _build_week(
+    answers: OnboardingAnswersV2,
+    input_hash: str,
+    calories: int,
+) -> tuple[
+    list[PlannedDay],
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str], float],
+]:
+    slots = _slot_plan_v2(answers)
+    weights = _meal_weights([(slot, label) for slot, label, _ in slots])
+    contexts = {context.slot: context for context in answers.meal_contexts}
+    shared_day_sets = {slot: _shared_days(context) for slot, context in contexts.items()}
+    fresh_totals: dict[tuple[str, str, str], float] = defaultdict(float)
+    long_life_totals: dict[tuple[str, str, str], float] = defaultdict(float)
+    days: list[PlannedDay] = []
+
+    for day_index in range(7):
+        planned_meals: list[PlannedMealV2] = []
+        for slot_index, ((slot, label, context_slot), weight) in enumerate(
+            zip(slots, weights, strict=True)
+        ):
+            occurrence = day_index * len(slots) + slot_index
+            catalog_meal = _choose_meal(answers, slot, input_hash, occurrence)
+            if catalog_meal is None:
+                return [PlannedDay(day=day, meals=[]) for day in range(1, 8)], {}, {}
+
+            target_calories = calories * weight
+            user_scale = min(1.8, max(0.65, target_calories / catalog_meal.calories_kcal))
+            context = contexts.get(context_slot) if context_slot else None
+            shared = bool(context and day_index in shared_day_sets[context.slot])
+            servings = context.shared_servings if context and shared else 1
+            audience = MealAudience.SHARED if shared else MealAudience.JUST_ME
+            meal_ingredients: list[IngredientAmount] = []
+
+            for item in catalog_meal.ingredients:
+                user_quantity = _round_quantity(item.quantity * user_scale)
+                meal_ingredients.append(
+                    IngredientAmount(
+                        name=item.name,
+                        quantity=user_quantity,
+                        unit=item.unit,
+                        aisle=item.aisle,
+                    )
+                )
+                grocery_quantity = item.quantity * (user_scale + max(0, servings - 1))
+                target_totals = (
+                    fresh_totals if item.purchase_kind == PurchaseKind.FRESH else long_life_totals
+                )
+                target_totals[(item.aisle, item.name, item.unit)] += grocery_quantity
+
+            planned_meals.append(
+                PlannedMealV2(
+                    id=f"day-{day_index + 1}-{catalog_meal.id}-{slot_index + 1}",
+                    slot=label,
+                    name=catalog_meal.name,
+                    description=catalog_meal.description,
+                    calories_kcal=round(catalog_meal.calories_kcal * user_scale),
+                    macros=MacroTargets(
+                        protein_g=round(catalog_meal.protein_g * user_scale),
+                        carbohydrates_g=round(catalog_meal.carbohydrates_g * user_scale),
+                        fat_g=round(catalog_meal.fat_g * user_scale),
+                    ),
+                    prep_minutes=catalog_meal.prep_minutes,
+                    portions=round(user_scale, 1),
+                    ingredients=meal_ingredients,
+                    audience=audience,
+                    servings=servings,
+                )
+            )
+        days.append(PlannedDay(day=day_index + 1, meals=planned_meals))
+    return days, fresh_totals, long_life_totals
+
+
+def _build_preview_v2(answers: OnboardingAnswersV2) -> StarterPlanPreviewV2:
+    if answers.profile.age < 18:
+        raise UnderageNotSupportedError("FuelLayer currently supports adults aged 18 and over.")
+
+    input_hash = _canonical_hash(answers)
+    energy, confidence, boundary_warnings = _energy_target(answers)
+    macros = _macro_targets(answers, energy)
+    days, fresh_week, long_life_week = _build_week(answers, input_hash, energy)
+    constrained = any(not day.meals for day in days)
+    horizon_days: Literal[7, 14, 28]
+    if answers.shopping.cadence.value == "weekly":
+        horizon_days = 7
+    elif answers.shopping.cadence.value == "twice_monthly":
+        horizon_days = 14
+    else:
+        horizon_days = 28
+    weeks = horizon_days // 7
+
+    main_totals = _scale_totals(long_life_week, weeks)
+    for key, value in fresh_week.items():
+        main_totals[key] = main_totals.get(key, 0) + value
+    refresh_sections = _group_grocery(fresh_week)
+    fresh_refreshes = [
+        GroceryRefresh(
+            day_offset=week * 7,
+            label=f"Fresh food refresh · week {week + 1}",
+            sections=refresh_sections,
+        )
+        for week in range(1, weeks)
+        if refresh_sections
+    ]
+
+    explanations = [
+        f"Built around your {answers.goal.type.value.replace('_', ' ')} goal.",
+        "Uses a seven-day menu and your real mix of personal and shared meals.",
+        f"Your grocery plan covers {horizon_days} days and separates fresh refills.",
+    ]
+    warnings = [
+        "This is a starting estimate for general wellness, not medical nutrition advice.",
+        *boundary_warnings,
+    ]
+    if answers.profile.equation_sex == EquationSex.UNSPECIFIED:
+        warnings.append(
+            "The estimate uses the midpoint of both equation constants, so its confidence "
+            "range is wider."
+        )
+    if constrained:
+        warnings.append(
+            "No catalog week safely matched every selected boundary. Adjust a preference; "
+            "allergies will never be ignored."
+        )
+
+    return StarterPlanPreviewV2(
+        status=PlanStatus.CONSTRAINED if constrained else PlanStatus.READY,
+        engine_version=ENGINE_VERSION_V2,
+        content_version=CONTENT_VERSION,
+        input_hash=input_hash,
+        daily_energy_kcal=energy,
+        macros=macros,
+        confidence=confidence,
+        days=days,
+        grocery=GroceryPlan(
+            horizon_days=horizon_days,
+            main_trip=[] if constrained else _group_grocery(main_totals),
+            fresh_refreshes=[] if constrained else fresh_refreshes,
+        ),
+        explanations=explanations,
+        warnings=warnings,
+    )
+
+
+def build_preview(
+    answers: OnboardingAnswersV1 | OnboardingAnswersV2,
+) -> StarterPlanPreviewV1 | StarterPlanPreviewV2:
+    if isinstance(answers, OnboardingAnswersV2):
+        return _build_preview_v2(answers)
+    return _build_preview_v1(answers)
