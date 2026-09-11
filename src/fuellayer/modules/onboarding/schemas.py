@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -150,6 +150,7 @@ class ActivityAnswers(BaseModel):
 
 
 class FoodAnswers(BaseModel):
+    excluded_ingredients: list[str] = Field(default_factory=list, max_length=50)
     dietary_pattern: DietaryPattern
     allergens: list[AllergenCode] = Field(default_factory=list, max_length=15)
     meals_per_day: Annotated[int, Field(ge=2, le=4)]
@@ -231,6 +232,7 @@ class ShoppingProfile(BaseModel):
 
 
 class FoodAnswersV2(BaseModel):
+    excluded_ingredients: list[str] = Field(default_factory=list, max_length=50)
     dietary_pattern: DietaryPattern
     allergens: list[AllergenCode] = Field(default_factory=list, max_length=15)
     meals_per_day: Annotated[int, Field(ge=2, le=4)]
@@ -303,13 +305,19 @@ class IngredientAmount(BaseModel):
 
 
 class PlannedMeal(BaseModel):
+    total_portions: float | None = Field(default=None, gt=0)
+    portion_audience: Literal["personal", "shared"] | None = None
+    portion_basis: str | None = None
+    recipe_id: str | None = None
+    recipe_snapshot: dict[str, Any] | None = None
+    nutrition_status: Literal["estimated", "known", "missing"] = "estimated"
     id: str
     slot: str
     name: str
     description: str
     calories_kcal: int
     macros: MacroTargets
-    prep_minutes: int
+    prep_minutes: float | None
     portions: float
     ingredients: list[IngredientAmount]
 
@@ -336,6 +344,7 @@ class GrocerySection(BaseModel):
 
 
 class StarterPlanPreviewV1(BaseModel):
+    start_date: str | None = None
     schema_version: Literal[1] = 1
     status: PlanStatus
     engine_version: str
@@ -363,6 +372,7 @@ class GroceryPlan(BaseModel):
 
 
 class StarterPlanPreviewV2(BaseModel):
+    start_date: str | None = None
     schema_version: Literal[2] = 2
     status: PlanStatus
     engine_version: str

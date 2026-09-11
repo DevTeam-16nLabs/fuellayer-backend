@@ -32,6 +32,8 @@ class CatalogMeal:
     patterns: frozenset[DietaryPattern]
     allergens: frozenset[AllergenCode]
     ingredients: tuple[CatalogIngredient, ...]
+    # Populate only with authored preparation instructions. Empty recipes cannot cook.
+    steps: tuple[str, ...] = ()
 
 
 VEGAN = frozenset(

@@ -76,3 +76,7 @@ must receive registered-dietitian review before production exposure.
 After migrations, run `python scripts/import_foods.py` from the backend directory to upsert the checked-in catalogue. See `data/README.md` for official attribution, pinned export checksums and rebuilding. Unknown/censored nutrients remain null with source notes. USDA, Open Food Facts, image analysis and private diary synchronization are separate upcoming increments.
 
 For Expo Web, `CORS_ORIGINS` is a comma-separated allowlist, defaulting to `http://localhost:8081,http://127.0.0.1:8081`. Native device requests do not need browser CORS. Keep provider secrets in the ignored backend `.env`.
+
+## Recipe imports
+
+Recipe imports require migration `20260908_11` and a separately supervised worker. See [recipe import operations and API contracts](docs/recipe-imports.md) for setup, supported-source boundaries, recovery, and validation.

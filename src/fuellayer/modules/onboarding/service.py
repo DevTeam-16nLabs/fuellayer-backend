@@ -17,6 +17,7 @@ from fuellayer.modules.onboarding.models import (
     Goal,
     GroceryListRecord,
     NutritionTarget,
+    NutritionTargetHistory,
     OnboardingCompletion,
     PlanningProfile,
     Profile,
@@ -157,6 +158,12 @@ async def complete_onboarding(
                 ),
                 FoodPreference(
                     user_id=user.id,
+                    excluded_ingredients=answers.food.excluded_ingredients,
+                    snack_slots=(
+                        answers.food.snack_slots
+                        if isinstance(answers, OnboardingAnswersV2)
+                        else None
+                    ),
                     dietary_pattern=answers.food.dietary_pattern.value,
                     allergens=[allergen.value for allergen in answers.food.allergens],
                     meals_per_day=answers.food.meals_per_day,
@@ -175,6 +182,12 @@ async def complete_onboarding(
                         if isinstance(answers, OnboardingAnswersV1)
                         else answers.shopping.cadence.value
                     ),
+                ),
+                NutritionTargetHistory(
+                    user_id=user.id, revision=0, verified=True,
+                    target={"daily_energy_kcal": preview.daily_energy_kcal,
+                            "macros": preview.macros.model_dump(),
+                            "engine_version": preview.engine_version},
                 ),
                 NutritionTarget(
                     user_id=user.id,
@@ -288,6 +301,16 @@ async def upgrade_planning_profile(
             },
         )
 
+    if user.preferences_revision > 0:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "use_preferences",
+                "message": (
+                    "Use Profile & preferences to update settings without replacing your plan."
+                ),
+            },
+        )
     food = user.food_preferences
     goal_detail = GoalDetail(user.goal.goal_detail) if user.goal.goal_detail else None
     snack_slots = [0] if food.include_snacks else []

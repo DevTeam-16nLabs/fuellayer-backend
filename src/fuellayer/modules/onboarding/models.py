@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from fuellayer.core.database import Base
@@ -16,6 +16,8 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    diary_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    preferences_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     clerk_subject: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     onboarding_status: Mapped[str] = mapped_column(String(32), default="not_started")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -59,6 +61,9 @@ class Profile(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
     )
+    legacy_shopping: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    current_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    age_recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     age_at_onboarding: Mapped[int] = mapped_column(Integer)
     height_cm: Mapped[float] = mapped_column(Float)
     equation_sex: Mapped[str] = mapped_column(String(32))
@@ -106,6 +111,8 @@ class FoodPreference(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
     )
+    excluded_ingredients: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
+    snack_slots: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
     dietary_pattern: Mapped[str] = mapped_column(String(32))
     allergens: Mapped[list[str]] = mapped_column(JSON, default=list)
     meals_per_day: Mapped[int] = mapped_column(Integer)
@@ -227,3 +234,29 @@ class AccountDeletionRequest(Base):
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PreferenceReceipt(Base):
+    __tablename__ = "preference_receipts"
+    __table_args__ = (UniqueConstraint("user_id", "request_id"),)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    request_id: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    response: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class NutritionTargetHistory(Base):
+    __tablename__ = "nutrition_target_history"
+    verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    __table_args__ = (UniqueConstraint("user_id", "revision"),)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    target: Mapped[dict[str, Any]] = mapped_column(JSON)
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

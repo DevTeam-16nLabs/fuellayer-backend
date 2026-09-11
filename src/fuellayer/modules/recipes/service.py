@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from fuellayer.modules.kitchen.models import KitchenItem
 from fuellayer.modules.onboarding.catalog import MEAL_CATALOG
 from fuellayer.modules.onboarding.models import FoodPreference, User
+from fuellayer.modules.preferences.constraints import allergy_matches, excluded_matches
 from fuellayer.modules.recipes.models import RecipeBookmark
 from fuellayer.modules.recipes.schemas import (
     BookmarkResponse,
@@ -16,6 +17,7 @@ from fuellayer.modules.recipes.schemas import (
     RecipeIngredient,
     RecipeLibrary,
     RecipeNutrition,
+    RecipeStep,
     RecipeSummary,
 )
 
@@ -40,7 +42,10 @@ def build_library(
             compatibility = (
                 "matches"
                 if preferences.dietary_pattern in meal.patterns
-                and not set(preferences.allergens).intersection(meal.allergens)
+                and not allergy_matches(preferences.allergens, meal.allergens)
+                and not excluded_matches(
+                    preferences.excluded_ingredients or [], (i.name for i in meal.ingredients)
+                )
                 else "conflict"
             )
         recipes.append(
@@ -49,6 +54,9 @@ def build_library(
                 name=meal.name,
                 ingredient_names=[ingredient.name for ingredient in meal.ingredients],
                 prep_minutes=meal.prep_minutes,
+                steps_status="available"
+                if meal.steps and all(s.strip() for s in meal.steps)
+                else "missing",
                 # These are catalogue estimates for ONE base serving, never the
                 # personalised meal values or the total for a shared household.
                 nutrition=RecipeNutrition(calories_kcal=meal.calories_kcal, status="estimated"),
@@ -95,6 +103,7 @@ def build_detail(recipe_id: str) -> RecipeDetail:
         **summary.model_dump(),
         description=meal.description,
         slot=meal.slot,
+        steps=[RecipeStep(id=f"step-{i}", text=text) for i, text in enumerate(meal.steps)],
         ingredients=[
             RecipeIngredient(name=item.name, quantity=item.quantity, unit=item.unit)
             for item in meal.ingredients
@@ -114,18 +123,34 @@ async def get_library(session: AsyncSession, subject: str) -> RecipeLibrary:
             select(RecipeBookmark.recipe_id).where(RecipeBookmark.user_id == user.id)
         )
     )
-    return build_library(
+    library = build_library(
         user.food_preferences,
         user.starter_plan.preview_payload if user.starter_plan else None,
         saved,
         set(
             await session.scalars(
                 select(KitchenItem.ingredient_key).where(
-                    KitchenItem.user_id == user.id, KitchenItem.ingredient_key.is_not(None)
+                    KitchenItem.user_id == user.id,
+                    KitchenItem.ingredient_key.is_not(None),
+                    KitchenItem.status == "active",
+                    (KitchenItem.quantity.is_(None) | (KitchenItem.quantity > 0)),
                 )
             )
         ),
     )
+
+    from fuellayer.modules.recipe_imports.models import ImportedRecipe
+    from fuellayer.modules.recipe_imports.service import detail as imported_detail
+
+    for recipe in await session.scalars(
+        select(ImportedRecipe)
+        .where(ImportedRecipe.user_id == user.id, ImportedRecipe.library_saved_at.is_not(None))
+        .order_by(ImportedRecipe.updated_at.desc())
+    ):
+        library.items.append(
+            RecipeSummary.model_validate(await imported_detail(session, user, recipe))
+        )
+    return library
 
 
 async def set_bookmark(

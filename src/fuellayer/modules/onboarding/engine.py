@@ -29,6 +29,7 @@ from fuellayer.modules.onboarding.schemas import (
     StarterPlanPreviewV1,
     StarterPlanPreviewV2,
 )
+from fuellayer.modules.preferences.constraints import allergy_matches, excluded_matches
 
 ENGINE_VERSION = "energy-v1.0.0"
 ENGINE_VERSION_V2 = "weekly-household-v2.0.0"
@@ -154,7 +155,10 @@ def _choose_meal(
         for meal in MEAL_CATALOG
         if meal.slot == slot
         and answers.food.dietary_pattern in meal.patterns
-        and not allergens.intersection(meal.allergens)
+        and not allergy_matches(allergens, meal.allergens)
+        and not excluded_matches(
+            answers.food.excluded_ingredients, (i.name for i in meal.ingredients)
+        )
         and meal.prep_minutes <= max_prep
     ]
     if not candidates:
