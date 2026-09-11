@@ -1,7 +1,8 @@
 import re
 import unicodedata
+from itertools import batched
 
-from sqlalchemy import case, func, select
+from sqlalchemy import ColumnElement, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fuellayer.modules.foods.models import CatalogueFood
@@ -21,20 +22,30 @@ async def search_foods(
     tokens = normalized.split()
     if not tokens:
         return FoodSearchResponse(items=[])
-    statement = select(CatalogueFood)
-    for token in tokens:
-        statement = statement.where(CatalogueFood.search_text.contains(token, autoescape=True))
     name = CatalogueFood.name_fr if locale == "fr" else CatalogueFood.name_en
+    matches = select(CatalogueFood.id, func.lower(name).label("ranked_name"))
+    for token in tokens:
+        matches = matches.where(CatalogueFood.search_text.contains(token, autoescape=True))
     # Rank accented and unaccented queries identically, just as filtering does.
     # Preserve commas here so a food's base name outranks ingredient mentions.
-    ranked_name = func.lower(name)
-    for accented in "àáâäãåçèéêëìíîïñòóôöõùúûüýÿœ":
-        ranked_name = func.replace(ranked_name, accented, normalize_query(accented))
+    # Separate shallow CTEs avoid overflowing older SQLite parsers with nested REPLACE calls.
+    # SQLite's built-in LOWER only handles ASCII, so also fold uppercase accents explicitly.
+    accents = "àáâäãåçèéêëìíîïñòóôöõùúûüýÿœ"
+    names = matches.cte("food_names_0")
+    for index, characters in enumerate(
+        batched(accents + accents.upper(), 7, strict=False), start=1
+    ):
+        ranked_name: ColumnElement[str] = names.c.ranked_name
+        for accented in characters:
+            ranked_name = func.replace(ranked_name, accented, normalize_query(accented))
+        names = select(names.c.id, ranked_name.label("ranked_name")).cte(f"food_names_{index}")
     # Deterministic pagination, favor the full phrase before scattered token matches.
     statement = (
-        statement.order_by(
+        select(CatalogueFood)
+        .join(names, CatalogueFood.id == names.c.id)
+        .order_by(
             case((CatalogueFood.nutrients["calories_kcal"].as_float().is_(None), 1), else_=0),
-            case((ranked_name.startswith(normalized + ",", autoescape=True), 0), else_=1),
+            case((names.c.ranked_name.startswith(normalized + ",", autoescape=True), 0), else_=1),
             case((CatalogueFood.search_text.contains(normalized, autoescape=True), 0), else_=1),
             func.length(name),
             name,

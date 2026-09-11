@@ -1,10 +1,16 @@
 import json
+import os
+import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from fuellayer.core.config import settings
 from fuellayer.main import app
 from fuellayer.modules.foods import router as food_router
 from fuellayer.modules.foods.models import CatalogueFood
@@ -34,12 +40,46 @@ def test_catalogue_keeps_source_facts_and_unknown_values() -> None:
     assert rice.source_version == "2025"
 
 
+@pytest_asyncio.fixture(
+    params=[
+        "sqlite",
+        pytest.param(
+            "postgres",
+            marks=pytest.mark.skipif(
+                os.getenv("FUELLAYER_TEST_POSTGRES") != "1",
+                reason="requires opt-in local PostgreSQL",
+            ),
+        ),
+    ]
+)
+async def session_factory(request: pytest.FixtureRequest) -> AsyncIterator[async_sessionmaker]:
+    admin = None
+    schema = "foods_test_" + uuid.uuid4().hex
+    if request.param == "postgres":
+        admin = create_async_engine(settings.database_url)
+        async with admin.begin() as conn:
+            await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+        engine = create_async_engine(
+            settings.database_url, connect_args={"server_settings": {"search_path": schema}}
+        )
+    else:
+        engine = create_async_engine("sqlite+aiosqlite://")
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(CatalogueFood.__table__.create)
+        yield async_sessionmaker(engine, expire_on_commit=False)
+    finally:
+        await engine.dispose()
+        if admin is not None:
+            async with admin.begin() as conn:
+                await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+            await admin.dispose()
+
+
 @pytest.mark.asyncio
-async def test_search_bilingual_accents_cooking_state_and_pagination() -> None:
-    engine = create_async_engine("sqlite+aiosqlite://")
-    async with engine.begin() as conn:
-        await conn.run_sync(CatalogueFood.__table__.create)
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+async def test_search_bilingual_accents_cooking_state_and_pagination(
+    session_factory: async_sessionmaker,
+) -> None:
     async with session_factory() as session:
         for food in catalogue():
             session.add(
@@ -69,9 +109,9 @@ async def test_search_bilingual_accents_cooking_state_and_pagination() -> None:
         accented = await search_foods(session, "épinard", "fr", 0, 5)
         plain = await search_foods(session, "epinard", "fr", 0, 5)
         assert [food.id for food in accented.items] == [food.id for food in plain.items]
+        assert plain.items[0].name_fr == "Épinard, cru"
         assert not (await search_foods(session, "%___", "fr", 0, 25)).items
         assert not (await search_foods(session, "qwertyuiopzz", "fr", 0, 25)).items
-    await engine.dispose()
 
 
 def test_public_api_validates_search_and_returns_contract(monkeypatch: pytest.MonkeyPatch) -> None:
