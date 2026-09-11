@@ -47,3 +47,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.13"
 strict = true
 packages = ["fuellayer"]
+
+[tool.uv]
+required-version = "==0.12.13"

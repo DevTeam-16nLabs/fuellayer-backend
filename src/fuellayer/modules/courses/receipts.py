@@ -53,11 +53,15 @@ async def extract(image: str) -> ExtractedReceipt:
     from fuellayer.integrations.ai import structured_response
 
     text = await structured_response(
-        endpoint=settings.receipt_endpoint, api_key=settings.receipt_api_key,
-        model=settings.receipt_model_id, prompt=PROMPT,
+        endpoint=settings.receipt_endpoint,
+        api_key=settings.receipt_api_key,
+        model=settings.receipt_model_id,
+        prompt=PROMPT,
         content=[{"type": "input_image", "image_url": image, "detail": "high"}],
-        schema=ExtractedReceipt.model_json_schema(), name="grocery_receipt",
-        openrouter=bool(settings.openrouter_api_key), timeout=100,
+        schema=ExtractedReceipt.model_json_schema(),
+        name="grocery_receipt",
+        openrouter=bool(settings.openrouter_api_key),
+        timeout=100,
     )
     return ExtractedReceipt.model_validate_json(text)
 

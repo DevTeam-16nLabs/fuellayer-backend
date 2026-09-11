@@ -49,6 +49,39 @@ ruff format --check .
 alembic upgrade head
 ```
 
+## Continuous integration
+
+GitHub Actions runs on pull requests, pushes to `main`, and manual dispatches.
+The workflow uses Python 3.13.7, uv 0.12.13, `uv.lock`, and PostgreSQL 17.
+Install the same dependency set locally with `uv sync --locked --extra dev`.
+
+The checks are `Backend quality` (Ruff lint/format and strict MyPy) and
+`Backend tests and migrations` (SQLite/PostgreSQL tests, the real Alembic chain,
+and two catalogue imports with identical results). Add both checks to the `main`
+branch ruleset after publishing the workflow to require them before merging.
+
+To reproduce the database checks, use a **disposable** PostgreSQL database whose
+name begins with `fuellayer_ci`, then run:
+
+```bash
+export ENVIRONMENT=test
+export DATABASE_URL=postgresql+asyncpg://fuellayer_ci:ci-test-only@127.0.0.1:5432/fuellayer_ci
+export FUELLAYER_TEST_POSTGRES=1
+export FUELLAYER_DIARY_POSTGRES_TEST=1
+uv run --no-sync python scripts/check_ci_database.py
+uv run --no-sync pytest --deselect=tests/test_diary_postgres.py::test_real_http_mobile_engine
+```
+
+The single deselected test needs the private mobile source. It runs in the mobile
+repository's CI, with this public backend checked out beside `fuellayer-mobile/`.
+When both repositories are present locally and a compatible Node version is on
+`PATH`, omit `--deselect` to run all tests, including the HTTP/mobile engine.
+No test needs real Clerk, Apple, Google, or AI credentials. JUnit results are kept
+as GitHub artifacts for 14 days.
+
+Merge the backend CI changes, including `uv.lock`, before enabling the mobile CI:
+the mobile integration job deliberately requires the backend's lockfile.
+
 ## Architecture
 
 The backend is a modular monolith. `src/fuellayer/modules/onboarding/` contains the v1

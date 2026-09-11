@@ -1,14 +1,17 @@
 import hashlib
 import json
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Literal
 
 from fuellayer.modules.onboarding.catalog import MEAL_CATALOG, CatalogMeal, PurchaseKind
 from fuellayer.modules.onboarding.schemas import (
+    ActivityAnswers,
     ActivityBand,
     ConfidenceLevel,
     CookingTimeBand,
     EquationSex,
+    GoalAnswers,
     GoalDetail,
     GoalType,
     GroceryItem,
@@ -26,6 +29,7 @@ from fuellayer.modules.onboarding.schemas import (
     PlannedMeal,
     PlannedMealV2,
     PlanStatus,
+    ProfileAnswers,
     StarterPlanPreviewV1,
     StarterPlanPreviewV2,
 )
@@ -36,6 +40,16 @@ ENGINE_VERSION_V2 = "weekly-household-v2.0.0"
 CONTENT_VERSION = "starter-catalog-v1.1.0"
 
 AnswerSet = OnboardingAnswersV1 | OnboardingAnswersV2
+
+
+@dataclass(frozen=True)
+class NutritionInputs:
+    """Validated fields shared by onboarding and preference recalculation."""
+
+    profile: ProfileAnswers
+    goal: GoalAnswers
+    activity: ActivityAnswers
+
 
 # These constants are intentionally centralized and versioned. They must receive
 # registered-dietitian review before FuelLayer is exposed as a production product.
@@ -79,7 +93,7 @@ def _canonical_hash(answers: AnswerSet) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:20]
 
 
-def _mifflin_rmr(answers: AnswerSet) -> tuple[float, ConfidenceLevel]:
+def _mifflin_rmr(answers: AnswerSet | NutritionInputs) -> tuple[float, ConfidenceLevel]:
     profile = answers.profile
     base = 10 * profile.weight_kg + 6.25 * profile.height_cm - 5 * profile.age
     if profile.equation_sex == EquationSex.MALE:
@@ -89,7 +103,7 @@ def _mifflin_rmr(answers: AnswerSet) -> tuple[float, ConfidenceLevel]:
     return ((base + 5) + (base - 161)) / 2, ConfidenceLevel.WIDER
 
 
-def _energy_target(answers: AnswerSet) -> tuple[int, ConfidenceLevel, list[str]]:
+def _energy_target(answers: AnswerSet | NutritionInputs) -> tuple[int, ConfidenceLevel, list[str]]:
     resting, confidence = _mifflin_rmr(answers)
     movement = ACTIVITY_MULTIPLIERS[answers.activity.daily_movement]
     goal_multiplier = GOAL_MULTIPLIERS[(answers.goal.type, answers.goal.detail)]
@@ -109,7 +123,7 @@ def _energy_target(answers: AnswerSet) -> tuple[int, ConfidenceLevel, list[str]]
     return round(raw_target / 10) * 10, confidence, warnings
 
 
-def _macro_targets(answers: AnswerSet, calories: int) -> MacroTargets:
+def _macro_targets(answers: AnswerSet | NutritionInputs, calories: int) -> MacroTargets:
     protein = round(answers.profile.weight_kg * PROTEIN_G_PER_KG[answers.goal.type])
     protein = min(protein, max(70, round(calories * 0.35 / 4)))
     fat = round(calories * 0.27 / 9)

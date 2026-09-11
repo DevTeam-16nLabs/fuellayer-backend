@@ -4,9 +4,9 @@ from fuellayer.api.v1.integrations import router as integrations_router
 from fuellayer.api.v1.me import router as me_router
 from fuellayer.api.v1.stores import router as stores_router
 from fuellayer.api.v1.system import router as system_router
-from fuellayer.modules.diary.router import router as diary_router
 from fuellayer.modules.cooking.router import router as cooking_router
 from fuellayer.modules.courses.router import router as courses_router
+from fuellayer.modules.diary.router import router as diary_router
 from fuellayer.modules.foods.router import router as foods_router
 from fuellayer.modules.kitchen.router import router as kitchen_router
 from fuellayer.modules.onboarding.router import router as onboarding_router

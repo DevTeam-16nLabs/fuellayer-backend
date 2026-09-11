@@ -1,7 +1,9 @@
 import copy
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, NoReturn
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
@@ -13,14 +15,14 @@ from fuellayer.modules.diary.schemas import Mutation, calendar_date
 from fuellayer.modules.onboarding.models import NutritionTargetHistory, User
 
 
-def fail(message: str, status=422, code="diary_invalid", **extra):
+def fail(message: str, status: int = 422, code: str = "diary_invalid", **extra: Any) -> NoReturn:
     raise HTTPException(status, {"code": code, "message": message, **extra})
 
 
-async def owner(db: AsyncSession, subject: str, write=False):
+async def owner(db: AsyncSession, subject: str, write: bool = False) -> User:
     # A database lock, not a process mutex: also serializes first-entry creation
     # and idempotency checks across workers. SQLite obtains a writer lock here.
-    if write or db.bind.dialect.name == "sqlite":
+    if write or db.get_bind().dialect.name == "sqlite":
         uid = await db.scalar(
             update(User)
             .where(User.clerk_subject == subject)
@@ -40,7 +42,7 @@ async def owner(db: AsyncSession, subject: str, write=False):
     return user
 
 
-def serialize(row: DiaryRecord):
+def serialize(row: DiaryRecord) -> dict[str, Any]:
     return {
         "entry": copy.deepcopy(row.payload),
         "diary_date": row.diary_date.isoformat(),
@@ -53,13 +55,13 @@ def serialize(row: DiaryRecord):
     }
 
 
-def digest(body):
+def digest(body: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
 
 
-async def mutate(db: AsyncSession, subject: str, key: str, body: Mutation):
+async def mutate(db: AsyncSession, subject: str, key: str, body: Mutation) -> dict[str, Any]:
     user = await owner(db, subject, write=True)
     request_hash = digest(body.model_dump(mode="json"))
     receipt = await db.scalar(
@@ -86,7 +88,7 @@ async def mutate(db: AsyncSession, subject: str, key: str, body: Mutation):
     if row is None and day > today:
         fail("Diary entries cannot be recorded in the future.")
     payload = body.entry.model_dump(mode="json", exclude_none=True) if body.entry else None
-    if payload is not None:
+    if payload is not None and body.entry is not None:
         # macros:null is a meaningful legacy representation, unlike absent optionals.
         payload["macros"] = body.entry.macros.model_dump() if body.entry.macros else None
         if body.entry.foodSnapshot:
@@ -154,6 +156,7 @@ async def mutate(db: AsyncSession, subject: str, key: str, body: Mutation):
                 user_id=user.id, entry_id=row.entry_id, revision=row.revision, record=serialize(row)
             )
         )
+    assert row is not None
     result = {"owner": subject, "record": serialize(row)}
     db.add(
         DiaryReceipt(user_id=user.id, request_id=key, request_hash=request_hash, response=result)
@@ -162,7 +165,7 @@ async def mutate(db: AsyncSession, subject: str, key: str, body: Mutation):
     return result
 
 
-def days_between(start: str, end: str):
+def days_between(start: str, end: str) -> list[date]:
     try:
         first, last = calendar_date(start), calendar_date(end)
     except ValueError as exc:
@@ -172,7 +175,9 @@ def days_between(start: str, end: str):
     return [first + timedelta(days=n) for n in range((last - first).days + 1)]
 
 
-async def target_for_dates(db, user_id, days):
+async def target_for_dates(
+    db: AsyncSession, user_id: UUID, days: list[date]
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     # Only prospectively verified events count. Legacy created_at baselines
     # deliberately cannot establish a historical daily target.
     rows = (
@@ -184,7 +189,7 @@ async def target_for_dates(db, user_id, days):
             .order_by(NutritionTargetHistory.effective_at)
         )
     ).all()
-    result = {}
+    result: dict[str, dict[str, Any]] = {}
     for day in days:
         # UTC-day comparison is explicitly metadata, not a user-day score. We
         # withhold comparison until a zone for the historical day is available.
@@ -199,7 +204,7 @@ async def target_for_dates(db, user_id, days):
     ]
 
 
-async def read_range(db, subject, start, end):
+async def read_range(db: AsyncSession, subject: str, start: str, end: str) -> dict[str, Any]:
     days = days_between(start, end)
     user = await owner(db, subject)
     rows = (
@@ -248,7 +253,7 @@ async def read_range(db, subject, start, end):
     }
 
 
-async def changes(db, subject, after, limit):
+async def changes(db: AsyncSession, subject: str, after: int, limit: int) -> dict[str, Any]:
     user = await owner(db, subject)
     if after > user.diary_revision:
         fail("Diary cursor is ahead of the account.", 409, "cursor_invalid")
@@ -270,8 +275,8 @@ async def changes(db, subject, after, limit):
     }
 
 
-def totals(entries):
-    values = dict(calories=0, protein_g=0, carbohydrates_g=0, fat_g=0)
+def totals(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    values: dict[str, float] = dict(calories=0, protein_g=0, carbohydrates_g=0, fat_g=0)
     missing = dict(protein_g=0, carbohydrates_g=0, fat_g=0)
     for e in entries:
         values["calories"] += e["calories"]
@@ -291,7 +296,7 @@ def totals(entries):
     return {"values": values, "missing": missing, "entry_count": len(entries)}
 
 
-async def weekly(db, subject, start, today):
+async def weekly(db: AsyncSession, subject: str, start: str, today: str) -> dict[str, Any]:
     first = calendar_date(start)
     if first.weekday() != 0:
         fail("A diary week starts on Monday.")

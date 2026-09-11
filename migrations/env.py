@@ -6,15 +6,15 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from fuellayer.core.config import settings
 from fuellayer.core.database import Base
-from fuellayer.modules.diary import models as diary_models  # noqa: F401
 from fuellayer.modules.cooking import models as cooking_models  # noqa: F401
 from fuellayer.modules.courses import models as courses_models  # noqa: F401
+from fuellayer.modules.diary import models as diary_models  # noqa: F401
 from fuellayer.modules.foods import models as foods_models  # noqa: F401
 from fuellayer.modules.kitchen import models as kitchen_models  # noqa: F401
 from fuellayer.modules.onboarding import models as onboarding_models  # noqa: F401
 from fuellayer.modules.plan import models as plan_models  # noqa: F401
-from fuellayer.modules.recipes import models as recipes_models  # noqa: F401
 from fuellayer.modules.recipe_imports import models as recipe_import_models  # noqa: F401
+from fuellayer.modules.recipes import models as recipes_models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

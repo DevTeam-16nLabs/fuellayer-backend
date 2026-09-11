@@ -1,6 +1,6 @@
 import re
 from datetime import date
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -49,7 +49,7 @@ class Snapshot(StrictModel):
     amount: Amount
 
     @model_validator(mode="after")
-    def validate_scaled(self):
+    def validate_scaled(self) -> Self:
         for name, value in self.food.nutrients.model_dump().items():
             if value is not None and value * self.amount / self.food.reference_amount > (
                 20000 if name == "calories_kcal" else 5000
@@ -70,7 +70,7 @@ class Entry(StrictModel):
 
     @field_validator("name")
     @classmethod
-    def name_not_blank(cls, value):
+    def name_not_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("A food name is required.")
         return value
@@ -93,13 +93,13 @@ class Mutation(StrictModel):
 
     @field_validator("diary_date")
     @classmethod
-    def valid_date(cls, value):
+    def valid_date(cls, value: str) -> str:
         calendar_date(value)
         return value
 
     @field_validator("timezone")
     @classmethod
-    def valid_zone(cls, value):
+    def valid_zone(cls, value: str | None) -> str | None:
         if value is not None:
             try:
                 ZoneInfo(value)
@@ -108,7 +108,7 @@ class Mutation(StrictModel):
         return value
 
     @model_validator(mode="after")
-    def valid_action(self):
+    def valid_action(self) -> Self:
         if self.action in ("put", "migrate") and self.entry is None:
             raise ValueError("This action requires an entry snapshot.")
         if self.entry and self.entry.id != self.entry_id:

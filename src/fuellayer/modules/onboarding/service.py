@@ -184,10 +184,14 @@ async def complete_onboarding(
                     ),
                 ),
                 NutritionTargetHistory(
-                    user_id=user.id, revision=0, verified=True,
-                    target={"daily_energy_kcal": preview.daily_energy_kcal,
-                            "macros": preview.macros.model_dump(),
-                            "engine_version": preview.engine_version},
+                    user_id=user.id,
+                    revision=0,
+                    verified=True,
+                    target={
+                        "daily_energy_kcal": preview.daily_energy_kcal,
+                        "macros": preview.macros.model_dump(),
+                        "engine_version": preview.engine_version,
+                    },
                 ),
                 NutritionTarget(
                     user_id=user.id,

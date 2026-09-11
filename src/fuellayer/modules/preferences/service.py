@@ -4,16 +4,22 @@ import copy
 import hashlib
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn, cast
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from fuellayer.modules.onboarding.catalog import MEAL_CATALOG
-from fuellayer.modules.onboarding.engine import _energy_target, _macro_targets, _mifflin_rmr
+from fuellayer.modules.onboarding.engine import (
+    NutritionInputs,
+    _energy_target,
+    _macro_targets,
+    _mifflin_rmr,
+)
 from fuellayer.modules.onboarding.models import (
     BodyMeasurement,
     NutritionTarget,
@@ -68,7 +74,9 @@ FIELDS = {
 }
 
 
-def fail(message: str, code: str = "preferences_invalid", status: int = 422, **extra: Any) -> None:
+def fail(
+    message: str, code: str = "preferences_invalid", status: int = 422, **extra: Any
+) -> NoReturn:
     raise HTTPException(status, {"code": code, "message": message, **extra})
 
 
@@ -270,9 +278,7 @@ def validate(v: dict[str, Any]) -> None:
 
 
 def calculate(v: dict[str, Any]) -> dict[str, Any]:
-    from types import SimpleNamespace
-
-    a = SimpleNamespace(
+    a = NutritionInputs(
         profile=ProfileAnswers.model_validate(v["profile"]),
         goal=GoalAnswers.model_validate(v["goal"]),
         activity=ActivityAnswers.model_validate(v["activity"]),
@@ -340,6 +346,7 @@ def restrictions(user: User, v: dict[str, Any]) -> dict[str, Any]:
 
 def representation(user: User) -> dict[str, Any]:
     v = values(user)
+    assert user.profile is not None
     return {
         "owner": user.clerk_subject,
         "revision": user.preferences_revision,
@@ -432,7 +439,7 @@ async def save(db: AsyncSession, subject: str, key: str, body: SaveRequest) -> d
         .values(preferences_revision=body.expected_revision + 1)
         .execution_options(synchronize_session=False)
     )
-    if result.rowcount != 1:
+    if cast(CursorResult[Any], result).rowcount != 1:
         await db.rollback()
         fail("Your preferences changed. Review your edits.", "preferences_conflict", 409)
     before = values(user)
