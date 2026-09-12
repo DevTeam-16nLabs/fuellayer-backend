@@ -17,7 +17,7 @@ from fuellayer.modules.recipe_imports import models as recipe_import_models  # n
 from fuellayer.modules.recipes import models as recipes_models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
