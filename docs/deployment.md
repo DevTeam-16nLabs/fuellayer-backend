@@ -22,6 +22,17 @@ Configurer le webhook `user.deleted` vers
 `https://api.fuellayer.16nlabs.com/api/v1/integrations/clerk/webhook`, puis enregistrer
 son secret dans `CLERK_WEBHOOK_SIGNING_SECRET`.
 
+La validation des sessions exige en production `CLERK_JWT_ISSUER`, fourni par la
+stack avec `https://clerk.fuellayer.16nlabs.com`. Il doit correspondre exactement à
+l’instance du mobile. Une session native envoyée dans `Authorization: Bearer` peut
+ne pas contenir `azp` lorsqu’aucune origine web n’a servi à la créer. Après vérification
+de la signature, de l’émetteur et des dates, cette absence est acceptée uniquement
+pour un Bearer sans en-tête `Origin`. Les cookies exigent `azp`, et toute valeur `azp`
+présente reste contrôlée par `CLERK_AUTHORIZED_PARTIES`. Ne pas vider cette liste pour
+contourner une erreur de connexion. Les refus journalisent seulement un code de cause,
+jamais le jeton ou les données du compte.
+Référence : [claims de session Clerk](https://clerk.com/docs/guides/sessions/session-tokens).
+
 `OPENAI_API_KEY` ou `OPENROUTER_API_KEY` active les fonctions nécessitant l’IA.
 `GOOGLE_PLACES_API_KEY` active la recherche de magasins. Le catalogue Ciqual ne dépend
 pas de ces fournisseurs. Ne pas réutiliser les secrets StrengthLayer par défaut.

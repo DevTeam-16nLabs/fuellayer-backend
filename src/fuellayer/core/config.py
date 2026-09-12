@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     clerk_secret_key: str | None = None
     clerk_publishable_key: str | None = None
     clerk_jwt_key: str | None = None
+    clerk_jwt_issuer: str | None = None
     clerk_webhook_signing_secret: str | None = None
     clerk_authorized_parties: str = "fuellayer://,http://localhost:8081"
     onboarding_preview_rate_limit: int = 10
