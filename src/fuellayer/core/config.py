@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +15,7 @@ class Settings(BaseSettings):
     receipt_model: str | None = None
     recipe_import_model: str = "gpt-4.1-mini"
     database_url: str = "postgresql+asyncpg://fuellayer:fuellayer@localhost:5433/fuellayer"
+    release_sha: str = "unknown"
     clerk_secret_key: str | None = None
     clerk_publishable_key: str | None = None
     clerk_jwt_key: str | None = None
@@ -23,6 +25,15 @@ class Settings(BaseSettings):
     store_search_rate_limit: int = 20
     google_places_api_key: str | None = None
     cors_origins: str = "http://localhost:8081,http://127.0.0.1:8081"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def use_async_postgres(cls, value: str) -> str:
+        # Managed hosts expose standard PostgreSQL URLs, while this app uses asyncpg.
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+asyncpg://" + value[len(prefix) :]
+        return value
 
     @property
     def receipt_api_key(self) -> str | None:

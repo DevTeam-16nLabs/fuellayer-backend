@@ -82,6 +82,13 @@ as GitHub artifacts for 14 days.
 Merge the backend CI changes, including `uv.lock`, before enabling the mobile CI:
 the mobile integration job deliberately requires the backend's lockfile.
 
+## Dokploy deployment
+
+See [the deployment runbook](docs/deployment.md) for PostgreSQL, the API/worker stack,
+HTTPS routing and release verification. `compose.deploy.yaml` deploys the existing
+FuelLayer production environment. `Backend deployment image` additionally tests this
+stack in CI; require this check alongside the two checks above.
+
 ## Architecture
 
 The backend is a modular monolith. `src/fuellayer/modules/onboarding/` contains the v1
